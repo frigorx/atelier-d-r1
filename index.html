@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atelier D R+1 — Vue 3D</title>
+<style>
+  :root { --bleu:#1b3a63; --orange:#ff6b35; --gris:#666666; }
+  html, body { margin:0; background:#ffffff; color:#000; height:100%; }
+  body { font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; font-size:19px; line-height:1.5; display:flex; flex-direction:column; }
+  header { padding:8px 16px 6px; border-bottom:2px solid var(--bleu); }
+  .etab { color:var(--gris); margin:0; font-size:16px; }
+  h1 { font-family:"Trebuchet MS", Arial, sans-serif; color:var(--bleu); font-size:24px; margin:0; }
+  .barre { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px; }
+  button { font:inherit; font-size:18px; padding:4px 14px; border:2px solid var(--bleu); background:#fff; color:var(--bleu); cursor:pointer; }
+  button.on { background:var(--bleu); color:#fff; }
+  button:disabled { opacity:0.4; cursor:default; }
+  #bRot { border-color:var(--orange); color:var(--orange); }
+  .aide { color:var(--gris); font-size:16px; }
+  #sel { font-weight:bold; color:var(--orange); }
+  #scene { flex:1 1 auto; position:relative; min-height:420px; background:#f4f6f9; touch-action:none; }
+  #scene canvas { display:block; }
+  #err { position:absolute; inset:0; display:none; padding:24px; color:#c62828; background:#fff; }
+</style>
+</head>
+<body>
+<header>
+  <p class="etab">LP Privé Jacques Raynaud — Campus ÉQUATIO</p>
+  <h1>Atelier D R+1 · étape 2 en 3D</h1>
+  <div class="barre">
+    <button id="vEns" class="on">Vue d'ensemble</button>
+    <button id="vTab">Vue depuis le tableau</button>
+    <button id="vDes">Vue de dessus</button>
+    <button id="vBanc">Un banc frigo de près</button>
+    <button id="bLab">Noms</button>
+  </div>
+  <div class="barre">
+    <span id="sel">Cliquez un objet pour voir son nom.</span>
+    <button id="bRot" disabled>↻ Tourner</button>
+    <button id="bReset">Remettre comme au départ</button>
+    <span class="aide">Glisser un objet : le déplacer · Glisser le vide : tourner la vue · Molette : zoomer</span>
+  </div>
+</header>
+<div id="scene"><div id="err">La vue 3D n'a pas pu se charger (connexion Internet nécessaire pour la bibliothèque 3D).</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  "use strict";
+  var host = document.getElementById("scene");
+  if (!window.THREE || !THREE.OrbitControls) { document.getElementById("err").style.display = "block"; return; }
+
+  var renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  host.appendChild(renderer.domElement);
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf4f6f9);
+  var camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
+  var controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xb8bcc4, 0.85));
+  var sun = new THREE.DirectionalLight(0xffffff, 0.55);
+  sun.position.set(18, 22, 6); sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  var sc = sun.shadow.camera; sc.left = -16; sc.right = 16; sc.top = 16; sc.bottom = -16; sc.far = 60;
+  sun.target.position.set(6, 0, 9); scene.add(sun); scene.add(sun.target);
+
+  // ---------- outils ----------
+  var M = {};
+  function mat(c, o) { var k = c + "|" + (o ? JSON.stringify(o) : ""); if (!M[k]) { var p = { color: c, roughness: 0.75, metalness: 0.05 }; for (var a in o) p[a] = o[a]; M[k] = new THREE.MeshStandardMaterial(p); } return M[k]; }
+  function box(par, w, h, d, c, x, y, z, o) {
+    var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(c, o));
+    m.position.set(x, y + h / 2, z); m.castShadow = true; m.receiveShadow = true; par.add(m); return m;
+  }
+  function cyl(par, r, h, c, x, y, z, o, axis) {
+    var m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 20), mat(c, o));
+    if (axis === "x") m.rotation.z = Math.PI / 2; if (axis === "z") m.rotation.x = Math.PI / 2;
+    m.position.set(x, y + (axis ? 0 : h / 2), z); m.castShadow = true; par.add(m); return m;
+  }
+  function sph(par, r, c, x, y, z) { var m = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2), mat(c)); m.position.set(x, y, z); m.castShadow = true; par.add(m); return m; }
+
+  var objets = [];
+  function grp(x0, z0, x1, z1, rot, nom, fixe) {
+    var g = new THREE.Group(); g.position.set((x0 + x1) / 2, 0, (z0 + z1) / 2); g.rotation.y = (rot || 0) * Math.PI / 180;
+    g.userData = { nom: nom || "", fixe: !!fixe, p0: [g.position.x, g.position.z, g.rotation.y] };
+    scene.add(g); if (nom) objets.push(g); return g;
+  }
+  function sprite(text) {
+    var cv = document.createElement("canvas"), ctx = cv.getContext("2d"), f = 44;
+    ctx.font = "bold " + f + "px Calibri, Carlito, Segoe UI, Arial"; var w = Math.ceil(ctx.measureText(text).width) + 28;
+    cv.width = w; cv.height = f + 22; ctx.font = "bold " + f + "px Calibri, Carlito, Segoe UI, Arial";
+    ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.fillRect(0, 0, w, cv.height);
+    ctx.strokeStyle = "#1b3a63"; ctx.lineWidth = 4; ctx.strokeRect(2, 2, w - 4, cv.height - 4);
+    ctx.fillStyle = "#1b3a63"; ctx.textBaseline = "middle"; ctx.fillText(text, 14, cv.height / 2 + 2);
+    var tex = new THREE.CanvasTexture(cv); tex.minFilter = THREE.LinearFilter;
+    var sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+    var s = 0.00058; sp.scale.set(w * s, cv.height * s, 1); sp.renderOrder = 10; return sp;
+  }
+  var labels = [];
+  function label(text, x, y, z) { var sp = sprite(text); sp.position.set(x, y, z); sp.visible = false; scene.add(sp); labels.push(sp); return sp; }
+
+  // ---------- couleurs ----------
+  var BLANC = 0xf2f2f0, GRIS_C = 0xc9ced6, GRIS_F = 0x5b6168, NOIR = 0x1e1f22, VERT_B = 0x2f7d6d, BLEU_B = 0x2c4f8c,
+      CUIVRE = 0xb8733a, BOIS = 0xc79a5b, ROUGE_M = 0xb3262b, BEIGE = 0xe6dcc4, JAUNE = 0xf0c419;
+
+  // ---------- bâtiment ----------
+  var floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 18), mat(0x9aa0a8));
+  floor.rotation.x = -Math.PI / 2; floor.position.set(6, 0, 9); floor.receiveShadow = true; scene.add(floor);
+  var cvc = new THREE.Mesh(new THREE.PlaneGeometry(4.94, 6), mat(0xb9bec6));
+  cvc.rotation.x = -Math.PI / 2; cvc.position.set(2.47, 0.005, 15); scene.add(cvc);
+  var cls = new THREE.Mesh(new THREE.PlaneGeometry(6.94, 6), mat(0xd9cbbd));
+  cls.rotation.x = -Math.PI / 2; cls.position.set(8.53, 0.005, 15); scene.add(cls);
+  var VERRE = { color: 0xcfe3f0, transparent: true, opacity: 0.28, roughness: 0.1 };
+  function mur(x0, z0, x1, z1) {
+    var L = Math.hypot(x1 - x0, z1 - z0), cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, horiz = Math.abs(z1 - z0) < 1e-6;
+    var w = horiz ? L : 0.15, d = horiz ? 0.15 : L;
+    box(scene, w, 0.9, d, 0xe9e6df, cx, 0, cz);
+    var g = box(scene, w * (horiz ? 1 : 0.4), 1.7, d * (horiz ? 0.4 : 1), 0xcfe3f0, cx, 0.9, cz, VERRE); g.castShadow = false;
+  }
+  mur(0, 0, 1.35, 0); mur(2.25, 0, 12, 0);
+  mur(0, 18, 12, 18); mur(0, 0, 0, 18);
+  mur(12, 0, 12, 5.0); mur(12, 5.9, 12, 12.15); mur(12, 13.05, 12, 18);
+  [[12, 5.45], [12, 12.6]].forEach(function (d) { box(scene, 0.06, 2.1, 0.9, 0x1f4f9c, d[0] + 0.05, 0, d[1]); });
+  label("P1 sortie", 12.6, 2.6, 5.45); label("P2 sortie", 12.6, 2.6, 12.6); label("réserve", 1.8, 2.6, -0.5);
+  box(scene, 0.12, 2.0, 6, BOIS, 5.0, 0, 15); var ci = box(scene, 0.06, 0.6, 6, 0xcfe3f0, 5.0, 2.0, 15, VERRE); ci.castShadow = false;
+  [[0,0],[6,0],[12,0],[0,6],[12,6],[0,12],[12,12],[0,18],[6,18],[12,18],[6,6],[6,12]].forEach(function (p) { box(scene, 0.42, 3.0, 0.42, 0xdedbd4, p[0], 0, p[1]); });
+
+  // ---------- modèles ----------
+  // Groupe de condensation à compresseur hermétique sur bâti. Coffret électrique côté +z local.
+  function bancFrigo(g, couleurBati, caisson) {
+    var W = 0.8, D = 0.7, H = 0.85, t = 0.04;
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(function (s) { box(g, t, H + 0.75, t, couleurBati, s[0] * (W / 2 - t / 2), 0, s[1] * (D / 2 - t / 2)); });
+    box(g, W, 0.04, D, couleurBati, 0, 0.12, 0); box(g, W, 0.04, D, couleurBati, 0, H - 0.04, 0);
+    box(g, W, 0.04, 0.04, couleurBati, 0, H + 0.71, D / 2 - 0.02);
+    cyl(g, 0.13, 0.26, NOIR, -0.18, H, -0.05, { metalness: 0.3, roughness: 0.5 }); sph(g, 0.13, NOIR, -0.18, H + 0.26, -0.05);
+    cyl(g, 0.05, 0.3, ROUGE_M, 0.05, H, -0.2);
+    box(g, 0.42, 0.4, 0.1, GRIS_F, 0.17, H, 0.15, { metalness: 0.4 });
+    cyl(g, 0.16, 0.02, 0x2b2d31, 0.17, H + 0.2, 0.2, null, "z");
+    cyl(g, 0.012, 0.38, CUIVRE, -0.02, H + 0.15, -0.05, { metalness: 0.7, roughness: 0.35 }, "x");
+    cyl(g, 0.012, 0.6, CUIVRE, 0.33, H, -0.15, { metalness: 0.7, roughness: 0.35 });
+    box(g, 0.42, 0.5, 0.16, BLANC, -0.15, H + 0.12, D / 2 - 0.1);
+    cyl(g, 0.06, 0.02, 0xffffff, 0.2, H + 0.5, D / 2 - 0.06, null, "z"); cyl(g, 0.06, 0.02, 0xffffff, 0.34, H + 0.5, D / 2 - 0.06, null, "z");
+    box(g, 0.5, 0.25, 0.3, 0x3a6ea5, 0.05, 0.2, 0);
+    if (caisson) box(g, 0.6, 1.85, 0.6, BLANC, -W / 2 - 0.34, 0, 0);
+  }
+  function chambreFroide(g, w, d, h, portes) {
+    box(g, w, h, d, BLANC); box(g, w + 0.04, 0.08, d + 0.04, GRIS_C, 0, h, 0);
+    box(g, w + 0.02, 0.1, d + 0.02, GRIS_C, 0, 0, 0);
+    for (var x = -w / 2 + 1.0; x < w / 2 - 0.2; x += 1.0) { box(g, 0.02, h - 0.1, 0.02, 0xd6d9de, x, 0.1, d / 2 + 0.005); box(g, 0.02, h - 0.1, 0.02, 0xd6d9de, x, 0.1, -d / 2 - 0.005); }
+    for (var z = -d / 2 + 1.0; z < d / 2 - 0.2; z += 1.0) { box(g, 0.02, h - 0.1, 0.02, 0xd6d9de, w / 2 + 0.005, 0.1, z); box(g, 0.02, h - 0.1, 0.02, 0xd6d9de, -w / 2 - 0.005, 0.1, z); }
+    portes.forEach(function (px) {
+      box(g, 1.0, 2.05, 0.04, GRIS_C, px, 0.05, d / 2 + 0.01);
+      box(g, 0.9, 1.95, 0.06, 0xe9e9e6, px, 0.08, d / 2 + 0.03);
+      box(g, 0.06, 0.3, 0.08, GRIS_F, px + 0.36, 0.95, d / 2 + 0.08);
+      box(g, 0.25, 0.15, 0.03, 0x2e7d32, px - 0.2, 1.7, d / 2 + 0.07);
+    });
+  }
+  function groupeCond(g, x, y, z, w, h, d, rot) {   // groupe de condensation à air (carrosserie + ventilateur + compresseur)
+    var u = new THREE.Group(); u.position.set(x, y, z); u.rotation.y = (rot || 0) * Math.PI / 180; g.add(u);
+    box(u, w, h, d, GRIS_C, 0, 0, 0, { metalness: 0.35 });
+    cyl(u, Math.min(w, h) * 0.36, 0.03, 0x2b2d31, -w * 0.18, h / 2, d / 2 + 0.01, null, "z");
+    cyl(u, Math.min(w, h) * 0.3, 0.035, 0x55595f, -w * 0.18, h / 2, d / 2 + 0.02, { wireframe: true }, "z");
+    cyl(u, 0.11, 0.24, NOIR, w * 0.3, 0.05, d / 2 + 0.14, { metalness: 0.3 }); sph(u, 0.11, NOIR, w * 0.3, 0.29, d / 2 + 0.14);
+    cyl(u, 0.012, h * 0.7, CUIVRE, w * 0.42, 0.05, d / 2 + 0.05, { metalness: 0.7 });
+  }
+  function table(g, w, d, h, plateau, pieds) {
+    box(g, w, 0.04, d, plateau, 0, h - 0.04, 0);
+    [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(function (s) { box(g, 0.05, h - 0.04, 0.05, pieds, s[0] * (w / 2 - 0.05), 0, s[1] * (d / 2 - 0.05)); });
+  }
+  function ecran(g, x, z, face) { box(g, 0.55, 0.36, 0.03, NOIR, x, 0.92, z); box(g, 0.06, 0.15, 0.06, NOIR, x, 0.76, z + (face > 0 ? -0.03 : 0.03)); }
+  function chaise(par, x, z) { box(par, 0.42, 0.04, 0.42, BOIS, x, 0.44, z); box(par, 0.42, 0.35, 0.03, BOIS, x, 0.5, z - 0.2); box(par, 0.38, 0.44, 0.38, 0x2a8fbf, x, 0, z, { wireframe: true }); }
+
+  var g;
+  // ---------- FROID ----------
+  g = grp(3.8, 0.05, 6.55, 2.0, 0, "Chambre froide négative (fixe)", true); chambreFroide(g, 2.75, 1.95, 2.4, [0.3]);
+  box(g, 1.6, 0.35, 0.5, BLANC, 0, 2.48, -0.5);                       // évaporateur en plafond (visible par le toit)
+  g = grp(2.85, 0.2, 3.75, 1.85, 0, "Groupe de condensation n°1 (chambre négative)", true); groupeCond(g, 0, 0, 0, 0.85, 1.1, 1.5, 90);
+  g = grp(6.6, 0.5, 7.0, 1.3, 0, "Groupe de condensation n°2 (chambre négative)", true); groupeCond(g, 0, 0, 0, 0.75, 0.7, 0.4, -90);
+  g = grp(4.9, 2.05, 6.5, 2.55, 0, "Groupe de condensation n°3 (chambre négative)", true); groupeCond(g, 0, 0, 0, 1.5, 0.75, 0.45, 0);
+  label("Chambre froide négative", 4.9, 3.1, 1.3);
+  g = grp(8.75, 0.1, 10.9, 0.9, 0, "Centrale 3 compresseurs"); table(g, 2.15, 0.8, 0.5, NOIR, NOIR);
+  [-0.65, 0, 0.65].forEach(function (x) { cyl(g, 0.17, 0.4, 0x2c62b0, x, 0.5, 0); sph(g, 0.17, 0x2c62b0, x, 0.9, 0); });
+  box(g, 2.0, 0.08, 0.08, CUIVRE, 0, 1.15, 0.25, { metalness: 0.6 }); box(g, 1.2, 0.7, 0.18, BLANC, 0, 1.25, 0.3);
+  label("Centrale", 9.8, 2.6, 0.5);
+  [1.57, 2.5, 3.43].forEach(function (z) {
+    var v = grp(10.9, z - 0.45, 11.8, z + 0.45, 0, "Vitrine réfrigérée");
+    box(v, 0.9, 0.8, 0.9, GRIS_C); box(v, 0.92, 0.08, 0.92, 0x8c939c, 0, 0.8, 0);
+    box(v, 0.4, 1.0, 0.86, BLANC, 0.22, 0.88, 0);
+    box(v, 0.46, 1.0, 0.86, 0xcfe3f0, -0.2, 0.88, 0, VERRE);
+    [1.15, 1.45].forEach(function (y) { box(v, 0.44, 0.02, 0.82, 0xe0e0e0, -0.2, y, 0); });
+    box(v, 0.92, 0.12, 0.92, GRIS_C, 0, 1.88, 0); box(v, 0.04, 0.1, 0.8, 0x2b2d31, -0.44, 0.2, 0);
+  });
+  label("Vitrine", 11.35, 2.5, 2.5);
+  g = grp(11.1, 3.95, 11.8, 4.6, 0, "Réfrigérateur"); box(g, 0.65, 1.8, 0.6, BLANC);
+  [6.95, 8.3, 9.65, 11.0].forEach(function (z) { var u = grp(10.75, z - 0.4, 11.75, z + 0.4, 90, "Banc frigo + caisson (groupe hermétique)"); bancFrigo(u, VERT_B, true); });
+  label("Bancs frigo", 11.0, 2.7, 9.0);
+  [3.4, 4.4].forEach(function (z) { var u = grp(1.0, z - 0.4, 2.0, z + 0.4, -90, "Banc frigo (groupe hermétique)"); bancFrigo(u, VERT_B, false); });
+  label("2 bancs frigo", 1.7, 2.4, 3.9);
+  g = grp(0.12, 8.0, 2.0, 11.4, 90, "Chambre froide CO₂ (fixe)", true); chambreFroide(g, 3.4, 1.88, 2.4, [-0.8, 0.8]);
+  box(g, 0.06, 2.4, 1.9, GRIS_C, 0, 0, 0); groupeCond(g, 0.6, 2.5, -0.3, 1.0, 0.6, 0.5, 0);
+  label("Chambre froide CO₂", 1.06, 3.0, 9.7);
+  g = grp(0.3, 5.4, 2.0, 7.7, 0, "VMC double"); box(g, 1.7, 1.6, 2.3, GRIS_C, 0, 0, 0, { metalness: 0.3 }); cyl(g, 0.2, 1.2, GRIS_C, 0, 1.6, 0.5, { metalness: 0.5 });
+  label("VMC double", 1.15, 2.6, 6.55);
+
+  // ---------- ÉLECTRICITÉ ----------
+  g = grp(7.1, 0.1, 8.6, 0.6, 0, "Armoire électrique"); box(g, 1.5, 2.0, 0.5, BEIGE); box(g, 0.02, 1.8, 0.02, GRIS_F, 0, 0.1, -0.26);
+  [-0.45, -0.15, 0.15, 0.45].forEach(function (x) { box(g, 0.08, 0.08, 0.03, ROUGE_M, x, 1.6, -0.26); });
+  label("Armoire électrique", 7.85, 2.5, 0.35);
+  g = grp(7.0, 2.7, 9.8, 3.5, 0, "Table de câblage"); table(g, 2.8, 0.8, 0.85, 0xd9d9d9, BLEU_B);
+  [-0.8, 0.6].forEach(function (x) { box(g, 1.0, 1.0, 0.05, 0xffffff, x, 0.85, 0.2); box(g, 0.96, 0.96, 0.06, 0xe0e0e0, x, 0.87, 0.19); });
+  label("Câblage", 8.4, 2.3, 3.1);
+  [[7.4, 3.9, 8.9, 4.6], [9.0, 3.9, 10.5, 4.6], [9.95, 1.3, 10.65, 2.8]].forEach(function (t) {
+    var gg = grp(t[0], t[1], t[2], t[3], 0, "Table d'outillage"); table(gg, t[2] - t[0], t[3] - t[1], 0.85, 0xd0d4d9, BLEU_B);
+    box(gg, 0.45, 0.25, 0.32, ROUGE_M, -0.2, 0.85, 0); if (t[2] - t[0] > 1) box(gg, 0.45, 0.25, 0.32, ROUGE_M, 0.4, 0.85, 0);
+  });
+  label("Outillage", 8.95, 1.6, 4.25);
+
+  // ---------- FAÇONNAGE ----------
+  [[6.3, 5.4, 8.3, 6.3], [6.3, 6.3, 8.3, 7.2], [8.6, 5.8, 10.4, 6.7]].forEach(function (t) {
+    var gg = grp(t[0], t[1], t[2], t[3], 0, "Établi bois à étau"); table(gg, t[2] - t[0], t[3] - t[1], 0.9, BOIS, BLEU_B);
+    box(gg, 0.18, 0.14, 0.22, 0x2b5ea8, -0.7, 0.9, 0); box(gg, 0.18, 0.14, 0.22, 0x2b5ea8, 0.7, 0.9, 0);
+  });
+  label("Établis bois", 7.3, 1.7, 6.3);
+  g = grp(2.5, 4.4, 3.5, 5.0, 0, "Chariot de récupération"); table(g, 1.0, 0.6, 0.8, 0x3d8f4a, 0x3d8f4a); box(g, 0.4, 0.3, 0.3, ROUGE_M, 0, 0.8, 0);
+
+  // ---------- CLIM ----------
+  g = grp(3.3, 10.6, 5.3, 11.95, 0, "Bancs ERM climatisation"); box(g, 1.2, 1.9, 0.5, GRIS_C, -0.35, 0, 0.3, { metalness: 0.3 }); box(g, 0.5, 0.6, 0.06, 0x7fbf8f, -0.35, 1.1, 0.03);
+  cyl(g, 0.25, 1.4, NOIR, 0.65, 0, 0.2); box(g, 0.6, 0.7, 0.5, JAUNE, 0.6, 0, -0.35, { wireframe: true });
+  label("Bancs ERM", 4.3, 2.5, 11.2);
+  g = grp(0.4, 16.9, 3.6, 17.8, 0, "CTA du TP CVC (fixe)", true); box(g, 3.2, 1.6, 0.9, GRIS_C, 0, 0, 0, { metalness: 0.4 });
+  cyl(g, 0.3, 0.9, GRIS_C, -1.0, 1.6, 0, { metalness: 0.5 });
+  label("TP CVC", 2.0, 2.6, 16.0);
+
+  // ---------- INFORMATIQUE ----------
+  [[3.4, 8.6, 6.0, 9.9], [6.5, 8.6, 9.7, 9.9]].forEach(function (t) {
+    var gg = grp(t[0], t[1], t[2], t[3], 0, "Îlot de 4 PC"), w = t[2] - t[0]; table(gg, w, 1.3, 0.75, 0xeeeeee, NOIR);
+    for (var i = 0; i < 2; i++) { var x = -w / 2 + w * (i + 0.5) / 2; ecran(gg, x, -0.3, 1); ecran(gg, x, 0.3, -1); chaise(gg, x, -1.0); chaise(gg, x, 1.0); }
+  });
+  label("Informatique", 6.5, 2.0, 9.25);
+
+  // ---------- CLASSE ----------
+  [15.7, 14.75, 13.8, 12.85].forEach(function (z) {
+    [5.6, 8.6].forEach(function (x0) {
+      [0, 1.3].forEach(function (dx) {
+        var gg = grp(x0 + dx, z, x0 + dx + 1.3, z + 0.5, 0, "Table élève (2 places)"); table(gg, 1.3, 0.5, 0.74, BOIS, 0x2a8fbf);
+        chaise(gg, -0.33, -0.55); chaise(gg, 0.33, -0.55);
+      });
+    });
+  });
+  box(scene, 3.0, 1.2, 0.04, 0xffffff, 8.5, 0.9, 17.88); box(scene, 3.1, 0.06, 0.08, 0xff6b35, 8.5, 0.86, 17.86);
+  g = grp(9.9, 16.6, 11.1, 17.2, 0, "Bureau enseignant"); table(g, 1.2, 0.6, 0.75, BOIS, NOIR);
+  g = grp(11.33, 15.9, 11.85, 17.9, 0, "2 armoires bleues"); box(g, 0.5, 1.95, 1.95, 0x1f4f9c);
+  g = grp(5.1, 16.3, 5.5, 17.7, 0, "Bibliothèque"); box(g, 0.38, 1.8, 1.4, GRIS_C);
+  label("Classe", 8.5, 2.4, 14.8);
+
+  // ---------- RANGEMENT ----------
+  g = grp(0.12, 0.4, 0.8, 5.3, 0, "Casiers vestiaires"); box(g, 0.66, 1.9, 4.9, 0x2a56a0); for (var i = 0; i < 6; i++) box(g, 0.5, 0.25, 0.6, ROUGE_M, 0, 1.9, -2.1 + i * 0.82);
+  for (var k = 0; k < 14; k++) { var zz = -2.45 + 0.175 + k * 0.35; box(g, 0.02, 1.8, 0.32, 0x3566b5, 0.335, 0.05, zz); box(g, 0.025, 0.12, 0.03, 0xdddddd, 0.35, 1.0, zz + 0.1);
+    for (var v2 = 0; v2 < 3; v2++) box(g, 0.025, 0.015, 0.18, 0x1d3f7a, 0.35, 1.55 + v2 * 0.05, zz); }
+  box(g, 0.66, 0.05, 4.9, 0x1d3f7a, 0, 0.92, 0);
+  label("Casiers", 0.46, 2.7, 1.8);
+  g = grp(0.95, 1.25, 2.0, 1.75, 0, "Armoire rouge"); box(g, 1.05, 1.9, 0.5, 0x8e1f24);
+  g = grp(2.1, 1.3, 2.7, 1.9, 0, "Réfrigérateur"); box(g, 0.6, 1.7, 0.6, BLANC);
+
+  // ---------- sélection, nom au clic, déplacement ----------
+  var KEY = "atelierD_R1_3d_v1";
+  try { var sv = JSON.parse(localStorage.getItem(KEY) || "null"); if (sv && sv.length === objets.length) objets.forEach(function (o, i) { o.position.x = sv[i][0]; o.position.z = sv[i][1]; o.rotation.y = sv[i][2]; }); } catch (e) {}
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(objets.map(function (o) { return [o.position.x, o.position.z, o.rotation.y]; }))); } catch (e) {} }
+
+  var selLabel = null, helper = null, sel = null;
+  var elSel = document.getElementById("sel"), bRot = document.getElementById("bRot");
+  function hauteur(o) { return new THREE.Box3().setFromObject(o).max.y; }
+  function select(o) {
+    sel = o;
+    if (helper) { scene.remove(helper); helper = null; }
+    if (selLabel) { scene.remove(selLabel); selLabel = null; }
+    if (!o) { elSel.textContent = "Cliquez un objet pour voir son nom."; bRot.disabled = true; return; }
+    helper = new THREE.BoxHelper(o, 0xff6b35); scene.add(helper);
+    selLabel = sprite(o.userData.nom); selLabel.position.set(o.position.x, hauteur(o) + 0.4, o.position.z); scene.add(selLabel);
+    elSel.textContent = o.userData.nom + (o.userData.fixe ? "" : " — glissez pour le déplacer");
+    bRot.disabled = o.userData.fixe;
+  }
+  function refresh() { if (sel) { helper.update(); selLabel.position.set(sel.position.x, hauteur(sel) + 0.4, sel.position.z); } }
+
+  var ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), sol = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), pt = new THREE.Vector3();
+  function aim(ev) {
+    var r = renderer.domElement.getBoundingClientRect();
+    ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+  }
+  function pick(ev) {
+    aim(ev);
+    var hit = ray.intersectObjects(objets, true)[0]; if (!hit) return null;
+    var o = hit.object; while (o && objets.indexOf(o) < 0) o = o.parent; return o;
+  }
+  var drag = null;
+  host.addEventListener("pointerdown", function (ev) {
+    if (ev.button !== 0) return;
+    var o = pick(ev);
+    if (!o) { drag = { vide: true, x: ev.clientX, y: ev.clientY }; return; }
+    select(o);
+    if (o.userData.fixe) return;
+    controls.enabled = false;
+    ray.ray.intersectPlane(sol, pt);
+    drag = { o: o, dx: o.position.x - pt.x, dz: o.position.z - pt.z };
+  }, true);
+  window.addEventListener("pointermove", function (ev) {
+    if (!drag || drag.vide) return;
+    aim(ev);
+    if (!ray.ray.intersectPlane(sol, pt)) return;
+    drag.o.position.x = Math.round((pt.x + drag.dx) * 20) / 20;
+    drag.o.position.z = Math.round((pt.z + drag.dz) * 20) / 20;
+    refresh();
+  });
+  window.addEventListener("pointerup", function (ev) {
+    if (drag && drag.vide && Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 5) select(null);
+    if (drag && drag.o) save();
+    drag = null; controls.enabled = true;
+  });
+  function tourner() { if (!sel || sel.userData.fixe) return; sel.rotation.y += Math.PI / 2; refresh(); save(); }
+  bRot.onclick = tourner;
+  window.addEventListener("keydown", function (e) { if (e.key === "r" || e.key === "R") tourner(); if (e.key === "Escape") select(null); });
+  document.getElementById("bReset").onclick = function () {
+    if (!confirm("Remettre tous les objets à leur place de départ ?")) return;
+    objets.forEach(function (o) { o.position.x = o.userData.p0[0]; o.position.z = o.userData.p0[1]; o.rotation.y = o.userData.p0[2]; });
+    try { localStorage.removeItem(KEY); } catch (e) {} select(null);
+  };
+
+  // ---------- caméra ----------
+  function resize() { var w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+  window.addEventListener("resize", resize); resize();
+  var VUES = {
+    vEns: { p: [-4.5, 13, 23], t: [6.5, 0, 8] },
+    vTab: { p: [8.5, 1.65, 17.4], t: [6, 1.0, 2] },
+    vDes: { p: [6, 30, 9.01], t: [6, 0, 9] },
+    vBanc: { p: [9.0, 2.1, 9.9], t: [11.0, 1.0, 8.6] }
+  };
+  function vue(id) {
+    var v = VUES[id]; camera.position.set(v.p[0], v.p[1], v.p[2]); controls.target.set(v.t[0], v.t[1], v.t[2]); controls.update();
+    Object.keys(VUES).forEach(function (k) { document.getElementById(k).classList.toggle("on", k === id); });
+  }
+  Object.keys(VUES).forEach(function (k) { document.getElementById(k).onclick = function () { vue(k); }; });
+  document.getElementById("bLab").onclick = function () { var on = !this.classList.contains("on"); this.classList.toggle("on", on); labels.forEach(function (l) { l.visible = on; }); };
+  vue("vEns");
+  (function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+  window.__vue = vue;
+  window.__positions = function () { return objets.map(function (o) { return [o.userData.nom, +o.position.x.toFixed(2), +o.position.z.toFixed(2), Math.round(o.rotation.y * 180 / Math.PI) % 360]; }); };
+})();
+</script>
+</body>
+</html>
